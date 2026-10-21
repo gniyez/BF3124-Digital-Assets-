@@ -1,0 +1,41 @@
+.listing-switcher{display:flex;align-items:end;justify-content:space-between;gap:18px;padding:16px 20px;margin-top:24px}
+.listing-switcher label{width:min(360px,100%)}
+.listing-switcher select{display:block;width:100%;margin-top:7px;border:1px solid #dce3eb;background:#fbfcfd;border-radius:7px;padding:10px;color:#1d2b40;font:inherit;font-size:11px}
+.dashboard-tabs{display:flex;gap:6px;padding:4px;background:#f1f4f7;border-radius:9px}
+.dashboard-tabs button{border:0;background:transparent;border-radius:6px;padding:9px 12px;color:#6f7d8e;font-size:10px;font-weight:700}
+.dashboard-tabs button.active{background:#fff;color:#24354a;box-shadow:0 1px 4px #14233818}
+.owner-view{margin-bottom:20px}
+.owner-view .dashboard-panel{max-width:700px;margin:0 auto}
+.company-section{padding:26px 30px;margin-bottom:20px}
+.company-section h2{font:800 20px Manrope,sans-serif;letter-spacing:-.5px;margin:10px 0}
+.company-section>p{max-width:780px;font-size:11px;line-height:1.8;color:#6f7d8e}
+.company-contact{display:flex;gap:48px;margin-top:20px;padding-top:17px;border-top:1px solid #edf0f4}
+.company-contact div{display:flex;flex-direction:column;gap:5px}
+.company-contact small{font-size:9px;color:#8996a5}
+.company-contact b{font-size:10px;color:#293a4f}
+.company-contact a{color:#55772e;text-decoration:none}
+.listing-list{display:flex;flex-direction:column;gap:9px;margin:-4px 0 28px}
+.listing-summary{width:100%;display:grid;grid-template-columns:minmax(250px,1fr) 120px 110px 100px 20px;align-items:center;gap:18px;text-align:left;padding:16px 20px;color:#24354a}
+.listing-summary:hover,.listing-summary.selected{border-color:#c8dda0;background:#fbfdf8}
+.listing-summary-main,.listing-summary-metric{display:flex;flex-direction:column;gap:5px;min-width:0}
+.listing-summary-main b{font:700 13px Manrope,sans-serif}
+.listing-summary-main small{font-size:9px;color:#8491a1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.listing-summary-metric small{font-size:8px;color:#929eac;text-transform:uppercase;letter-spacing:.6px}
+.listing-summary-metric b{font-size:10px;color:#33465d}
+.listing-summary-arrow{font-size:23px;color:#9bac82;text-align:right}
+.detail-heading{margin-top:10px}
+.back-button{border:0;background:transparent;color:#587435;font-size:10px;font-weight:700;padding:9px 0}
+.dashboard-tabs-detail{width:max-content;margin:18px auto}
+.topbar{gap:22px}
+.primary-nav{display:flex;align-items:center;gap:5px;margin-left:auto;margin-right:10px}
+.primary-nav button{border:0;background:transparent;color:#c2ccda;border-radius:7px;padding:10px 11px;font-size:10px;font-weight:700;white-space:nowrap}
+.primary-nav button:hover,.primary-nav button.active{background:#26364b;color:#d1f184}
+.top-actions{flex:0 0 auto}
+.list-heading-actions{display:flex;align-items:center;gap:14px}
+.add-listing-button{font-size:10px;padding:10px 13px}
+.pagination-bar{display:flex;align-items:center;justify-content:space-between;margin:13px 0 28px;color:#758397;font-size:10px}
+.pagination-bar>div{display:flex;align-items:center;gap:12px}
+.pagination-bar button{padding:8px 11px;font-size:9px}
+@media(max-width:760px){.listing-switcher{align-items:stretch;flex-direction:column;padding:15px}.listing-switcher label{width:100%}.dashboard-tabs button{flex:1;padding:10px 7px}.dashboard-tabs{width:100%}}
+@media(max-width:760px){.listing-summary{grid-template-columns:minmax(0,1fr) auto 20px;gap:8px 12px;padding:14px}.listing-summary-main{grid-column:1 / 3}.listing-summary-metric{grid-column:auto}.listing-summary-metric:nth-of-type(3){display:none}.listing-summary-arrow{grid-column:3;grid-row:1}.detail-heading{align-items:center}}
+@media(max-width:760px){.topbar{height:auto;min-height:72px;flex-wrap:wrap;padding-top:10px;padding-bottom:10px;gap:5px}.primary-nav{order:3;width:100%;margin:3px 0 0;justify-content:center}.primary-nav button{padding:8px 9px;font-size:9px}.top-actions{margin-left:auto}.list-heading-actions{gap:8px}.list-heading-actions .live-label{display:none}.pagination-bar{gap:8px}.pagination-bar>div{gap:6px}.pagination-bar>div span{font-size:9px}}
