@@ -16,17 +16,37 @@ export const ABI = [
   "function capitalWithdrawn() view returns (bool)",
   "function startDate() view returns (uint256)",
   "function maturityDate() view returns (uint256)",
+  "function fundingDeadline() view returns (uint256)",
+  "function projectedMonthlyIncomeWei() view returns (uint256)",
+  "function projectedTotalIncomeWei() view returns (uint256)",
   "function investorShareBps() view returns (uint256)",
   "function totalRentalTransferredToOwner() view returns (uint256)",
   "function claimable(address) view returns (uint256)",
-  "function createOffering(string,string,uint256,uint256,uint256,uint256)",
+  "function saleOf(address) view returns (uint256 amount,uint256 priceWei)",
+  "function createOffering(string,string,uint256,uint256,uint256,uint256,uint256,uint256,uint256)",
   "function buyTokens(uint256) payable",
   "function closeFunding()",
   "function depositRentalIncome() payable",
   "function withdrawRaisedCapital()",
   "function transferUnclaimedRentalToOwner()",
   "function claimDistribution()",
+  "function transfer(address,uint256)",
+  "function listForSale(uint256,uint256)",
+  "function cancelSale()",
+  "function buyResale(address) payable",
   "event TokensPurchased(address indexed investor,uint256 amount,uint256 payment)",
   "event RentalIncomeDeposited(address indexed operator,uint256 grossAmount,uint256 investorAmount,uint256 ownerAmount)",
-  "event DistributionClaimed(address indexed investor,uint256 amount)"
+  "event DistributionClaimed(address indexed investor,uint256 amount)",
+  "event TokensTransferred(address indexed from,address indexed to,uint256 amount)",
+  "event SaleListed(address indexed seller,uint256 amount,uint256 priceWei)",
+  "event SaleCancelled(address indexed seller)",
+  "event SaleFilled(address indexed seller,address indexed buyer,uint256 amount,uint256 priceWei)"
+];
+
+export const FACTORY_ABI = [
+  "function offeringCount() view returns (uint256)",
+  "function getAllOfferings() view returns (address[])",
+  "function getOfferingsPaged(uint256 start,uint256 count) view returns (address[])",
+  "function createListing() returns (address)",
+  "event ListingDeployed(address indexed offering,address indexed owner,uint256 index)"
 ];

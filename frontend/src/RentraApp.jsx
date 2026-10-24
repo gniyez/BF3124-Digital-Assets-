@@ -1,19 +1,10 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { BrowserProvider, Contract, formatEther, parseEther } from "ethers";
-import { ABI } from "./contract";
+import { ABI, FACTORY_ABI } from "./contract";
 import "./dashboard.css";
 
 
-const CONTRACT_ADDRESSES = (import.meta.env.VITE_RENTRA_CONTRACT_ADDRESSES || import.meta.env.VITE_RENTRA_CONTRACT_ADDRESS || "")
-  .split(",").map((value) => value.trim()).filter(Boolean);
-const LISTING_TEMPLATES = [
-  { name: "Orchard Residences", description: "Residential rental income opportunity" },
-  { name: "Harbourfront Lofts", description: "Mixed-use waterfront rental income opportunity" },
-  { name: "Garden District Offices", description: "Commercial rental income opportunity" }
-];
-const LISTINGS = CONTRACT_ADDRESSES.length
-  ? LISTING_TEMPLATES.slice(0, CONTRACT_ADDRESSES.length)
-  : LISTING_TEMPLATES;
+const FACTORY_ADDRESS = (import.meta.env.VITE_RENTRA_FACTORY_ADDRESS || "").trim();
 const PAGE_SIZE = 8;
 
 function shortAddress(address) {
@@ -29,13 +20,12 @@ export default function RentraApp() {
   const [chainId, setChainId] = useState("");
   const [contract, setContract] = useState(null);
   const [contracts, setContracts] = useState([]);
+  const [factory, setFactory] = useState(null);
   const [selectedListing, setSelectedListing] = useState(null);
   const [pageMode, setPageMode] = useState("market");
   const [returnPageMode, setReturnPageMode] = useState("market");
   const [currentPage, setCurrentPage] = useState(1);
-  const [dashboard, setDashboard] = useState("investor");
   const [isOwner, setIsOwner] = useState(false);
-  const [isOwnerAny, setIsOwnerAny] = useState(false);
   const [status, setStatus] = useState("Connect MetaMask to begin.");
   const [busy, setBusy] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
@@ -48,14 +38,39 @@ export default function RentraApp() {
   const [targetEth, setTargetEth] = useState("4");
   const [tokenCount, setTokenCount] = useState("4000");
   const [termYears, setTermYears] = useState("5");
+  const [fundingEndDate, setFundingEndDate] = useState(""); // optional datetime-local; empty = no deadline
+  const [monthlyIncomeEth, setMonthlyIncomeEth] = useState(""); // projected monthly rental income
+  const [totalIncomeEth, setTotalIncomeEth] = useState(""); // projected total rental income over term
+  const [resaleAmount, setResaleAmount] = useState("");   // tokens to list for resale
+  const [resalePriceEth, setResalePriceEth] = useState(""); // total resale price (ETH)
+  const [marketListings, setMarketListings] = useState([]); // active resale lots on this listing
+  const [mySale, setMySale] = useState(null); // the connected wallet's own active listing
 
   const refresh = useCallback(() => setRefreshKey((x) => x + 1), []);
 
+  // Load the factory (read-only) and the listings it tracks whenever the wallet/refresh changes.
   useEffect(() => {
-    if (!window.ethereum || !CONTRACT_ADDRESSES.length) return;
-    const provider = new BrowserProvider(window.ethereum);
-    setContracts(CONTRACT_ADDRESSES.map((address) => new Contract(address, ABI, provider)));
-  }, []);
+    let cancelled = false;
+    async function loadFactory() {
+      if (!window.ethereum || !FACTORY_ADDRESS) return;
+      try {
+        const provider = new BrowserProvider(window.ethereum);
+        let runner = provider;
+        if (account) {
+          try { runner = await provider.getSigner(); } catch { runner = provider; }
+        }
+        const factoryInstance = new Contract(FACTORY_ADDRESS, FACTORY_ABI, runner);
+        const addresses = await factoryInstance.getAllOfferings();
+        if (cancelled) return;
+        setFactory(factoryInstance);
+        setContracts(addresses.map((address) => new Contract(address, ABI, runner)));
+      } catch (error) {
+        if (!cancelled) setStatus(error.shortMessage || error.message || "Could not load listings from the factory.");
+      }
+    }
+    loadFactory();
+    return () => { cancelled = true; };
+  }, [account, refreshKey]);
 
   const connect = async () => {
     if (!window.ethereum) {
@@ -71,17 +86,11 @@ export default function RentraApp() {
       const chain = network.chainId.toString();
       setAccount(address);
       setChainId(chain);
-      if (!CONTRACT_ADDRESSES.length) {
-        setStatus("Wallet connected. Add listing contract addresses to frontend/.env and restart Vite.");
+      if (!FACTORY_ADDRESS) {
+        setStatus("Wallet connected. Add the factory address to frontend/.env (VITE_RENTRA_FACTORY_ADDRESS) and restart Vite.");
         return;
       }
-      const instances = CONTRACT_ADDRESSES.map((contractAddress) => new Contract(contractAddress, ABI, signer));
-      setContracts(instances);
-      const instance = instances[selectedListing ?? 0] || instances[0];
-      setContract(selectedListing === null ? null : instance);
-      const owners = await Promise.all(instances.map((item) => item.owner()));
-      setIsOwnerAny(owners.some((owner) => owner.toLowerCase() === address.toLowerCase()));
-      setIsOwner(instance && (await instance.owner()).toLowerCase() === address.toLowerCase());
+      // Contract instances and owner checks are refreshed by the effects keyed on `account`.
       setStatus(chain === "31337"
         ? "Wallet connected."
         : `Wallet connected to chain ID ${chain}.`);
@@ -127,25 +136,72 @@ export default function RentraApp() {
         const [
           offeringCreated, property, details, price, target, supply, sold, closed,
           balance, claimable, deposited, claimed, raised, capitalTransferred, withdrawn,
-          startDate, maturityDate, investorShareBps, ownerRentalTransferred
+          startDate, maturityDate, investorShareBps, ownerRentalTransferred, fundingDeadline
         ] = await Promise.all([
           contract.offeringCreated(), contract.propertyName(), contract.description(),
           contract.tokenPriceWei(), contract.fundingTargetWei(), contract.tokenSupply(), contract.tokensSold(),
           contract.fundingClosed(), contract.balanceOf(holder), contract.claimable(holder),
           contract.totalRentalDeposited(), contract.totalRentalClaimed(),
           contract.totalRaised(), contract.totalCapitalTransferredToOwner(), contract.capitalWithdrawn(),
-          contract.startDate(), contract.maturityDate(), contract.investorShareBps(), contract.totalRentalTransferredToOwner()
+          contract.startDate(), contract.maturityDate(), contract.investorShareBps(), contract.totalRentalTransferredToOwner(),
+          contract.fundingDeadline()
         ]);
+        const [projectedMonthly, projectedTotal] = await Promise.all([
+          contract.projectedMonthlyIncomeWei(), contract.projectedTotalIncomeWei()
+        ]);
+        // The latest rental deposit represents "this month's" rental income for the listing.
+        let lastDeposit = 0n;
+        try {
+          const events = await contract.queryFilter(contract.filters.RentalIncomeDeposited());
+          if (events.length) lastDeposit = events[events.length - 1].args.grossAmount;
+        } catch { /* event history unavailable; leave as zero */ }
+
+        // Total this investor has actually claimed = sum of their DistributionClaimed events.
+        let myClaimedTotal = 0n;
+        if (account) {
+          try {
+            const claims = await contract.queryFilter(contract.filters.DistributionClaimed(account));
+            myClaimedTotal = claims.reduce((sum, event) => sum + event.args.amount, 0n);
+          } catch { /* event history unavailable; leave as zero */ }
+        }
+
         if (!cancelled) setData({
           offeringCreated, property, details, price, target, supply, sold, closed,
           balance, claimable, deposited, claimed, raised, capitalTransferred, withdrawn,
-          startDate, maturityDate, investorShareBps, ownerRentalTransferred
+          startDate, maturityDate, investorShareBps, ownerRentalTransferred, lastDeposit, myClaimedTotal,
+          fundingDeadline, projectedMonthly, projectedTotal
         });
       } catch (error) {
         if (!cancelled) setStatus(error.shortMessage || error.message || "Could not read contract state.");
       }
     }
     load();
+    return () => { cancelled = true; };
+  }, [contract, account, refreshKey]);
+
+  // Load active secondary-market (resale) listings for the selected offering.
+  useEffect(() => {
+    let cancelled = false;
+    async function loadMarket() {
+      if (!contract) { setMarketListings([]); setMySale(null); return; }
+      try {
+        // Candidate sellers = everyone who ever listed. Verify each against current on-chain state.
+        const listedEvents = await contract.queryFilter(contract.filters.SaleListed());
+        const sellers = [...new Set(listedEvents.map((e) => e.args.seller))];
+        const results = await Promise.all(sellers.map(async (seller) => {
+          const sale = await contract.saleOf(seller);
+          return { seller, amount: sale.amount, priceWei: sale.priceWei };
+        }));
+        const active = results.filter((r) => r.amount > 0n);
+        if (cancelled) return;
+        const mine = account ? active.find((r) => r.seller.toLowerCase() === account.toLowerCase()) : null;
+        setMySale(mine || null);
+        setMarketListings(active);
+      } catch (error) {
+        if (!cancelled) { setMarketListings([]); setMySale(null); }
+      }
+    }
+    loadMarket();
     return () => { cancelled = true; };
   }, [contract, account, refreshKey]);
 
@@ -161,7 +217,7 @@ export default function RentraApp() {
             instance.tokenSupply(), instance.tokensSold(), instance.fundingClosed(), instance.maturityDate(), instance.owner(),
             instance.balanceOf(holder), instance.claimable(holder)
           ]);
-          return { index, created, property: property || LISTINGS[index]?.name || `Listing ${index + 1}`, details: details || LISTINGS[index]?.description || "Rental income opportunity", target, supply, sold, closed, maturityDate, owner, investorBalance, claimable };
+          return { index, created, property: property || `Listing ${index + 1}`, details: details || "Rental income opportunity", target, supply, sold, closed, maturityDate, owner, investorBalance, claimable };
         }));
         if (!cancelled) setListingData(rows);
       } catch (error) {
@@ -175,6 +231,33 @@ export default function RentraApp() {
   const fundingPercent = useMemo(() => {
     if (!data || data.supply === 0n) return 0;
     return Math.min(100, Number((data.sold * 10000n) / data.supply) / 100);
+  }, [data]);
+
+  // The investor's share of rental income equals their tokens / total supply.
+  const holdingPercent = useMemo(() => {
+    if (!data || data.supply === 0n) return 0;
+    return Number((data.balance * 1000000n) / data.supply) / 10000;
+  }, [data]);
+
+  // Rental income you have actually received = sum of your on-chain DistributionClaimed events.
+  const receivedToDateEth = useMemo(() => (data ? data.myClaimedTotal ?? 0n : 0n), [data]);
+
+  // Your share of the most recent ("this month's") rental deposit.
+  const myMonthlyShareEth = useMemo(() => {
+    if (!data || data.supply === 0n) return 0n;
+    return (data.lastDeposit * data.balance) / data.supply;
+  }, [data]);
+
+  // Whether the optional funding deadline has passed (0 = no deadline set).
+  const deadlinePassed = useMemo(() => {
+    if (!data || !data.fundingDeadline || data.fundingDeadline === 0n) return false;
+    return BigInt(Math.floor(Date.now() / 1000)) >= data.fundingDeadline;
+  }, [data]);
+
+  // Projected ROI over the term: (projected total income − funding target) / funding target.
+  const projectedRoi = useMemo(() => {
+    if (!data || data.target === 0n || data.projectedTotal === 0n) return null;
+    return Number(((data.projectedTotal - data.target) * 10000n) / data.target) / 100;
   }, [data]);
 
   const visibleListings = useMemo(() => {
@@ -194,17 +277,46 @@ export default function RentraApp() {
     setCurrentPage(1);
   }
 
-  function startNewListing() {
-    const slot = listingData.find((listing) => !listing.created);
-    if (!slot) return setStatus("All listing slots are in use. Increase deployment capacity to add another listing.");
-    setSelectedListing(slot.index);
-    setPageMode("detail");
-    setDashboard("owner");
-    setPropertyName(LISTINGS[slot.index]?.name || `New Listing ${slot.index + 1}`);
-    setDescription(LISTINGS[slot.index]?.description || "Rental income opportunity");
-    setTargetEth("1");
-    setTokenCount("1000");
-    setTermYears("5");
+  async function startNewListing() {
+    if (!factory) return setStatus("Connect your wallet before adding a listing.");
+    if (!account) return setStatus("Connect your wallet before adding a listing.");
+    setBusy(true);
+    setStatus("Add listing: deploying a new offering. Confirm in MetaMask…");
+    try {
+      const provider = new BrowserProvider(window.ethereum);
+      const signer = await provider.getSigner();
+      const factorySigner = new Contract(FACTORY_ADDRESS, FACTORY_ABI, signer);
+      const tx = await factorySigner.createListing();
+      setStatus("Add listing: deployment submitted. Waiting for confirmation…");
+      const receipt = await tx.wait();
+
+      // Find the new offering's address and index from the ListingDeployed event.
+      let newIndex = contracts.length;
+      for (const log of receipt.logs) {
+        try {
+          const parsed = factorySigner.interface.parseLog(log);
+          if (parsed && parsed.name === "ListingDeployed") {
+            newIndex = Number(parsed.args.index);
+            break;
+          }
+        } catch { /* not a factory event */ }
+      }
+
+      // Refresh the on-chain listing set, then open the new listing's owner form.
+      refresh();
+      setSelectedListing(newIndex);
+      setPageMode("detail");
+      setPropertyName("");
+      setDescription("Defined rights to eligible rental proceeds for an agreed financing term.");
+      setTargetEth("1");
+      setTokenCount("1000");
+      setTermYears("5");
+      setStatus("Add listing: offering deployed. Fill in the terms below and publish.");
+    } catch (error) {
+      setStatus(error.shortMessage || error.reason || error.message || "Add listing failed.");
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function act(label, callback) {
@@ -232,8 +344,30 @@ export default function RentraApp() {
     if (target % supply !== 0n) return setStatus("Funding target must divide evenly across the token count.");
     const start = BigInt(Math.floor(Date.now() / 1000) + 60);
     const maturity = start + years * 365n * 24n * 60n * 60n;
-    const fallbackName = LISTINGS[selectedListing]?.name || `New Listing ${selectedListing + 1}`;
-    return act("Create offering", () => contract.createOffering(propertyName || fallbackName, description, supply, target, start, maturity));
+    // Optional funding deadline: 0 = none. Must be in the future and on/before maturity.
+    let deadline = 0n;
+    if (fundingEndDate) {
+      const seconds = Math.floor(new Date(fundingEndDate).getTime() / 1000);
+      if (!Number.isFinite(seconds) || seconds <= 0) return setStatus("Enter a valid funding end date or leave it blank.");
+      deadline = BigInt(seconds);
+      if (deadline <= start) return setStatus("Funding end date must be in the future.");
+      if (deadline > maturity) return setStatus("Funding end date must be on or before the maturity date.");
+    }
+    // Optional projected figures (informational). Blank = 0.
+    let monthly = 0n;
+    let totalIncome = 0n;
+    if (monthlyIncomeEth) {
+      try { monthly = parseEther(monthlyIncomeEth); } catch { return setStatus("Enter a valid projected monthly rental income or leave it blank."); }
+    }
+    if (totalIncomeEth) {
+      try { totalIncome = parseEther(totalIncomeEth); } catch { return setStatus("Enter a valid projected total rental income or leave it blank."); }
+    }
+    if (monthly > 0n && totalIncome > 0n && totalIncome < monthly) {
+      return setStatus("Projected total income should be at least one month's income.");
+    }
+    const fallbackName = `New Listing ${selectedListing + 1}`;
+    if (!propertyName.trim()) return setStatus("Enter a property / offering name.");
+    return act("Create offering", () => contract.createOffering(propertyName || fallbackName, description, supply, target, start, maturity, deadline, monthly, totalIncome));
   };
   const buy = () => {
     const n = BigInt(amount);
@@ -247,9 +381,23 @@ export default function RentraApp() {
     let value;
     try { value = parseEther(depositAmount); } catch { return setStatus("Enter a valid ETH amount."); }
     if (value <= 0n) return setStatus("Deposit must be greater than zero.");
-    return act("Record rental proceeds", () => contract.depositRentalIncome({ value }));
+    return act("Credit this month's rental income", () => contract.depositRentalIncome({ value }));
   };
   const claim = () => act("Claim distribution", () => contract.claimDistribution());
+
+  const listResale = () => {
+    if (!data) return;
+    let amount;
+    try { amount = BigInt(resaleAmount); } catch { return setStatus("Enter a whole number of tokens to sell."); }
+    if (amount <= 0n) return setStatus("Enter a positive number of tokens to sell.");
+    if (amount > data.balance) return setStatus("You cannot list more tokens than you hold.");
+    let price;
+    try { price = parseEther(resalePriceEth); } catch { return setStatus("Enter a valid total resale price in ETH."); }
+    if (price <= 0n) return setStatus("Resale price must be greater than zero.");
+    return act("List tokens for resale", () => contract.listForSale(amount, price));
+  };
+  const cancelResale = () => act("Cancel resale listing", () => contract.cancelSale());
+  const buyResale = (seller, priceWei) => act("Buy resale lot", () => contract.buyResale(seller, { value: priceWei }));
 
   return (
     <div className="app-shell">
@@ -287,7 +435,7 @@ export default function RentraApp() {
           <div><div className="eyebrow muted">RENTAL INCOME OPPORTUNITIES</div><h2>{pageMode === "my-listings" ? "My listings" : pageMode === "my-investments" ? "My investments" : "Available listings"}</h2></div>
           <div className="list-heading-actions">
             <span className="live-label"><span/> {visibleListings.length} LISTINGS</span>
-            {isOwnerAny && pageMode !== "my-investments" && <button className="primary-button add-listing-button" onClick={startNewListing}>+ Add listing</button>}
+            {account && pageMode !== "my-investments" && <button className="primary-button add-listing-button" disabled={busy} onClick={startNewListing}>+ Add listing</button>}
           </div>
         </section>
 
@@ -319,7 +467,7 @@ export default function RentraApp() {
 
         {selectedListing !== null && <>
         <section className="section-heading detail-heading">
-          <div><div className="eyebrow muted">LISTING DETAILS</div><h2>{data?.property || LISTINGS[selectedListing]?.name || "Offering details"}</h2></div>
+          <div><div className="eyebrow muted">LISTING DETAILS</div><h2>{data?.property || "Offering details"}</h2></div>
           <button className="back-button" onClick={() => { setSelectedListing(null); setPageMode(returnPageMode); }}>← Back to listings</button>
         </section>
 
@@ -329,13 +477,13 @@ export default function RentraApp() {
           <section className="empty-state panel">
             <div className="empty-icon">⌂</div>
             <h3>No offering has been created yet</h3>
-            <p>Offering terms are being prepared. Connect the authorized owner wallet to publish this listing.</p>
+            <p>{isOwner ? "Fill in the offering terms in the owner dashboard below and publish to open this listing for subscription." : "Offering terms are being prepared. This listing isn't open for subscription yet."}</p>
           </section>
         ) : (
           <section className="offering-card panel">
             <div className="property-art"><div className="property-sun"/><div className="property-building"><i/><i/><i/><i/><i/><i/><i/><i/></div><span className="property-tag">RENTAL INCOME RIGHTS</span></div>
             <div className="offering-details">
-              <div className="offering-top"><span className="status-tag"><span/> {data.closed ? "FUNDING CLOSED" : "OPEN FOR SUBSCRIPTION"}</span><span className="asset-code">RENTRA · LISTING 00{selectedListing + 1}</span></div>
+              <div className="offering-top"><span className="status-tag"><span/> {data.closed ? "FUNDING CLOSED" : deadlinePassed ? "FUNDING ENDED" : "OPEN FOR SUBSCRIPTION"}</span><span className="asset-code">RENTRA · LISTING 00{selectedListing + 1}</span></div>
               <h3>{data.property}</h3>
               <p className="subtext">{data.details}</p>
               <div className="metrics">
@@ -344,43 +492,140 @@ export default function RentraApp() {
                 <div><small>Tokens sold</small><strong>{data.sold.toString()} <small>/ {data.supply.toString()}</small></strong></div>
               </div>
               <div className="row-data"><span>Financing term</span><b>{new Date(Number(data.startDate) * 1000).toLocaleDateString()} – {new Date(Number(data.maturityDate) * 1000).toLocaleDateString()}</b></div>
+              <div className="row-data"><span>Funding closes</span><b>{data.fundingDeadline && data.fundingDeadline !== 0n ? new Date(Number(data.fundingDeadline) * 1000).toLocaleString() : "No set deadline"}</b></div>
               <div className="progress-head"><span>Funding progress</span><b>{fundingPercent.toFixed(2)}%</b></div>
               <div className="progress-track"><div style={{ width: `${fundingPercent}%` }}/></div>
-              <div className="offering-actions">
-                <label>Tokens to purchase<input type="number" min="1" step="1" value={amount} onChange={e => setAmount(e.target.value)} disabled={busy || data.closed}/></label>
-                <button className="primary-button" disabled={!contract || busy || data.closed || !account || !data.offeringCreated} onClick={buy}>{busy ? "Processing…" : "Buy tokens ↗"}</button>
-              </div>
-              <p className="fine-print">Subscriptions are completed through the connected wallet. Tokens represent rights to the offering’s defined rental-income stream, not ownership of the property.</p>
+
+              {(data.projectedMonthly > 0n || data.projectedTotal > 0n) && (
+                <div className="projection-card">
+                  <div className="projection-head"><span className="eyebrow muted">EXPECTED RETURN (PROJECTED)</span>{projectedRoi !== null && <span className="roi-pill">{projectedRoi.toFixed(1)}% ROI over term</span>}</div>
+                  <div className="stat-grid projection-grid">
+                    <div><small>Projected monthly income</small><strong>{eth(data.projectedMonthly)} ETH</strong></div>
+                    <div><small>Projected total over term</small><strong>{eth(data.projectedTotal)} ETH</strong></div>
+                  </div>
+                  <p className="fine-print">Projected figures are the owner's estimates, not guarantees. Actual income depends on the rental payments deposited during the term.</p>
+                </div>
+              )}
+
+              {isOwner ? (
+                <p className="fine-print">You own this listing. Owners manage the offering from the owner dashboard below and cannot subscribe to their own tokens.</p>
+              ) : (
+                <>
+                  <div className="offering-actions">
+                    <label>Tokens to purchase<input type="number" min="1" step="1" value={amount} onChange={e => setAmount(e.target.value)} disabled={busy || data.closed || deadlinePassed}/></label>
+                    <button className="primary-button" disabled={!contract || busy || data.closed || deadlinePassed || !account || !data.offeringCreated} onClick={buy}>{busy ? "Processing…" : deadlinePassed ? "Funding ended" : "Buy tokens ↗"}</button>
+                  </div>
+                  <p className="fine-print">{deadlinePassed ? "The funding deadline for this listing has passed, so new purchases are closed." : "Subscriptions are completed through the connected wallet. Tokens represent rights to the offering’s defined rental-income stream, not ownership of the property."}</p>
+                </>
+              )}
             </div>
           </section>
         )}
 
-        <section className="dashboard-tabs dashboard-tabs-detail" role="tablist" aria-label="Dashboard view">
-          <button className={dashboard === "investor" ? "active" : ""} onClick={() => setDashboard("investor")}>Investor dashboard</button>
-          <button className={dashboard === "owner" ? "active" : ""} onClick={() => setDashboard("owner")}>Owner dashboard</button>
+        <section className="dashboard-role-note info-box neutral centered">
+          {!account
+            ? "Connect your wallet to buy tokens or manage a listing you own."
+            : isOwner
+              ? "You own this listing. The owner dashboard below lets you manage the offering."
+              : "You're viewing this as an investor. Buy tokens above, then track and claim your rental income below."}
         </section>
-        {dashboard === "investor" ? <section className="dashboard-grid investor-view">
+        {!isOwner ? <section className="investor-view">
           <div className="panel dashboard-panel">
             <div className="panel-title"><div><span className="eyebrow muted">YOUR POSITION</span><h3>Investor dashboard</h3></div><span className="round-icon">↗</span></div>
-            <div className="position-value">{data ? data.balance.toString() : "—"} <span>RENT units</span></div>
-            <p className="subtext">Units held by the connected wallet</p>
+
+            <div className="investor-headline">
+              <div className="position-value">{data ? data.balance.toString() : "—"} <span>RENT units</span></div>
+              <div className="holding-share">
+                <small>Your share of rental income</small>
+                <strong>{data ? holdingPercent.toFixed(2) : "—"}%</strong>
+              </div>
+            </div>
+            <p className="subtext">{data ? `${data.balance.toString()} of ${data.supply.toString()} tokens — you receive ${holdingPercent.toFixed(2)}% of every rental distribution.` : "Units held by the connected wallet"}</p>
+            <div className="holding-track"><div style={{ width: `${Math.min(100, holdingPercent)}%` }}/></div>
+
             <div className="divider"/>
-            <div className="row-data"><span>Claimable distribution</span><b>{data ? eth(data.claimable) : "—"} ETH</b></div>
-            <div className="row-data"><span>Total rental income deposited</span><b>{data ? eth(data.deposited) : "—"} ETH</b></div>
+
+            <div className="stat-grid investor-stats">
+              <div><small>Your tokens</small><strong>{data ? data.balance.toString() : "—"}</strong></div>
+              <div><small>Total supply</small><strong>{data ? data.supply.toString() : "—"}</strong></div>
+              <div><small>Income share</small><strong>{data ? holdingPercent.toFixed(2) : "—"}%</strong></div>
+            </div>
+
+            <div className="investor-rows-label">This month</div>
+            <div className="row-data"><span>This month's rental income</span><b>{data ? eth(data.lastDeposit) : "—"} ETH</b></div>
+            <div className="row-data"><span>My share this month ({data ? holdingPercent.toFixed(2) : "—"}%)</span><b>{data ? eth(myMonthlyShareEth) : "—"} ETH</b></div>
+
+            <div className="investor-rows-label">To date</div>
+            <div className="row-data"><span>Total rental income received by owner</span><b>{data ? eth(data.deposited) : "—"} ETH</b></div>
+            <div className="row-data"><span>Total rental income I've received</span><b>{data ? eth(receivedToDateEth) : "—"} ETH</b></div>
+            <div className="row-data"><span>Rental income I can claim now</span><b>{data ? eth(data.claimable) : "—"} ETH</b></div>
+
             <button className="secondary-button full" disabled={!contract || busy || !data || data.claimable === 0n} onClick={claim}>Claim rental income</button>
+            <p className="fine-print">Each month the owner credits that month's rental income, split across investors by token share. You earn {data ? holdingPercent.toFixed(2) : "—"}% ({data ? data.balance.toString() : "—"} of {data ? data.supply.toString() : "—"} tokens). Your share accrues automatically; claim it to your wallet before maturity.</p>
           </div>
+
+          {data?.offeringCreated && (
+            <div className="panel dashboard-panel secondary-market">
+              <div className="panel-title"><div><span className="eyebrow muted">SECONDARY MARKET</span><h3>Resell &amp; buy tokens</h3></div><span className="round-icon">⇄</span></div>
+              <p className="subtext">Trade rental-income tokens with other investors before maturity. The seller keeps rental accrued up to the sale; the buyer earns from deposits made afterwards.</p>
+
+              <div className="divider"/>
+
+              {/* Your own listing / list form */}
+              <div className="investor-rows-label">Sell your tokens</div>
+              {mySale ? (
+                <>
+                  <div className="row-data"><span>Your active listing</span><b>{mySale.amount.toString()} tokens for {eth(mySale.priceWei)} ETH</b></div>
+                  <button className="secondary-button full" disabled={!account || busy} onClick={cancelResale}>Cancel listing</button>
+                </>
+              ) : (
+                <>
+                  <div className="market-form">
+                    <label>Tokens to sell<input type="number" min="1" step="1" value={resaleAmount} onChange={e => setResaleAmount(e.target.value)} disabled={!account || busy || !data || data.balance === 0n}/></label>
+                    <label>Total price (ETH)<input type="number" min="0" step="0.01" value={resalePriceEth} onChange={e => setResalePriceEth(e.target.value)} disabled={!account || busy || !data || data.balance === 0n}/></label>
+                  </div>
+                  <button className="secondary-button full" disabled={!account || busy || !data || data.balance === 0n} onClick={listResale}>List for resale</button>
+                  {data && data.balance === 0n && <p className="fine-print">You need to hold tokens in this listing before you can sell any.</p>}
+                </>
+              )}
+
+              {/* Other sellers' listings */}
+              <div className="investor-rows-label">Buy from other investors</div>
+              {marketListings.filter((l) => !account || l.seller.toLowerCase() !== account.toLowerCase()).length === 0 ? (
+                <p className="fine-print">No tokens are currently listed for resale by other investors.</p>
+              ) : (
+                marketListings
+                  .filter((l) => !account || l.seller.toLowerCase() !== account.toLowerCase())
+                  .map((l) => (
+                    <div key={l.seller} className="market-lot">
+                      <div className="market-lot-info">
+                        <b>{l.amount.toString()} tokens</b>
+                        <small>{shortAddress(l.seller)} · {eth(l.priceWei)} ETH total</small>
+                      </div>
+                      <button className="primary-button" disabled={!account || busy} onClick={() => buyResale(l.seller, l.priceWei)}>Buy ↗</button>
+                    </div>
+                  ))
+              )}
+            </div>
+          )}
         </section> : <section className="owner-view">
           <div className="panel dashboard-panel">
             <div className="panel-title"><div><span className="eyebrow muted">OFFERING CONTROLS</span><h3>Owner dashboard</h3></div><span className="round-icon">⌘</span></div>
-            <div className="owner-banner">{isOwner ? "Owner wallet connected · manages all three listings" : "Connect the contract owner wallet to manage the offering."}</div>
-            {!data?.offeringCreated && isOwner && (
+            <div className="info-box neutral owner-banner">Owner wallet connected · you manage this listing</div>
+            {!data?.offeringCreated && (
               <div className="form-stack">
                 <label>Property / offering name<input value={propertyName} onChange={e => setPropertyName(e.target.value)}/></label>
                 <label>Offering description<textarea value={description} onChange={e => setDescription(e.target.value)} rows="2"/></label>
                 <label>Funding target (ETH)<input type="number" min="0.000000000000000001" step="0.1" value={targetEth} onChange={e => setTargetEth(e.target.value)}/></label>
                 <label>Number of tokens<input type="number" min="1" step="1" value={tokenCount} onChange={e => setTokenCount(e.target.value)}/></label>
                 <label>Financing term (years)<input type="number" min="1" step="1" value={termYears} onChange={e => setTermYears(e.target.value)}/></label>
-                <p className="fine-print">The target is divided evenly across the token supply. All committed rental proceeds recorded for this offering are allocated by token holdings.</p>
+                <label>Funding end date (optional)<input type="datetime-local" value={fundingEndDate} onChange={e => setFundingEndDate(e.target.value)}/></label>
+                <label>Projected monthly rental income (ETH)<input type="number" min="0" step="0.01" value={monthlyIncomeEth} onChange={e => setMonthlyIncomeEth(e.target.value)} placeholder="e.g. 0.08"/></label>
+                <label>Projected total rental income over the term (ETH)<input type="number" min="0" step="0.1" value={totalIncomeEth} onChange={e => setTotalIncomeEth(e.target.value)} placeholder="e.g. 5"/></label>
+                {totalIncomeEth && targetEth && Number(targetEth) > 0 && (
+                  <div className="info-box accent">Investors will see an expected term ROI of about <b>{(((Number(totalIncomeEth) - Number(targetEth)) / Number(targetEth)) * 100).toFixed(1)}%</b> based on these figures.</div>
+                )}
+                <p className="fine-print">The target is divided evenly across the token supply and sets the token price. The projected monthly and total rental income are your estimates shown to investors so they can gauge expected return — they are not guarantees. Actual payouts come only from the rental income you deposit during the term. A funding end date is optional.</p>
                 <button className="primary-button full" disabled={busy} onClick={create}>Publish offering</button>
               </div>
             )}
@@ -389,13 +634,13 @@ export default function RentraApp() {
                 <div className="row-data"><span>Funding status</span><b>{data.closed ? "Closed" : "Open"}</b></div>
                 <div className="row-data"><span>Total raised</span><b>{eth(data.raised)} ETH</b></div>
                 <div className="row-data"><span>Capital transferred to owner</span><b>{eth(data.capitalTransferred)} ETH</b></div>
-                {!data.closed && <button className="secondary-button full" disabled={!isOwner || busy || data.sold === 0n} onClick={close}>Close funding</button>}
+                {!data.closed && <button className="secondary-button full" disabled={!isOwner || busy || data.sold === 0n} onClick={close}>Close funding early</button>}
+                {!data.closed && <p className="fine-print">Funding closes on its own once every token is sold. Close early only if you want to stop sales before then — this is also required before withdrawing the raised capital.</p>}
                 {data.closed && !data.withdrawn && <button className="secondary-button full" disabled={!isOwner || busy} onClick={withdrawCapital}>Transfer raised capital to owner</button>}
-                <label>Eligible rental proceeds received (ETH)<input type="number" min="0.000000000000000001" step="0.01" value={depositAmount} onChange={e => setDepositAmount(e.target.value)} disabled={!data.closed}/></label>
-                <button className="primary-button full" disabled={!isOwner || busy || !data.closed || BigInt(Math.floor(Date.now() / 1000)) < data.startDate || BigInt(Math.floor(Date.now() / 1000)) >= data.maturityDate} onClick={deposit}>Record proceeds &amp; allocate investor distributions</button>
-                <p className="fine-print">Record the portion of rental proceeds committed to this financing. The contract allocates it across investors by token holdings; each investor can claim their accrued distribution.</p>
+                <label>This month's rental income to distribute (ETH)<input type="number" min="0.000000000000000001" step="0.01" value={depositAmount} onChange={e => setDepositAmount(e.target.value)} disabled={data.sold === 0n}/></label>
+                <button className="primary-button full" disabled={!isOwner || busy || data.sold === 0n || BigInt(Math.floor(Date.now() / 1000)) < data.startDate || BigInt(Math.floor(Date.now() / 1000)) >= data.maturityDate} onClick={deposit}>Credit this month's rental income to investors</button>
+                <p className="fine-print">Enter the rental income collected this month. The contract splits it across investors by their token share, and each investor can then claim their portion. You can distribute income as soon as tokens have been bought — funding does not need to be closed first. In this demo you credit it on demand to simulate a monthly payout.</p>
                 {BigInt(Math.floor(Date.now() / 1000)) >= (data.maturityDate || 0n) && <button className="secondary-button full" disabled={!isOwner || busy} onClick={recoverUnclaimed}>Transfer unclaimed rental to owner</button>}
-                {!isOwner && <p className="fine-print">Owner actions are disabled for this wallet.</p>}
               </div>
             )}
           </div>

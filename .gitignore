@@ -1,0 +1,17 @@
+# Dependencies (reinstalled with `npm install`)
+node_modules/
+frontend/node_modules/
+
+# Build output / generated artifacts
+frontend/dist/
+artifacts/
+cache/
+
+# Local environment (the deploy script regenerates frontend/.env)
+frontend/.env
+.env
+
+# Logs and OS cruft
+*.log
+.DS_Store
+Thumbs.db
